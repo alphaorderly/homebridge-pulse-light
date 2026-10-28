@@ -1,0 +1,29 @@
+# Compiled code
+dist
+
+# Dependencies
+node_modules/
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Output of 'npm pack'
+*.tgz
+
+# TypeScript cache
+*.tsbuildinfo
+
+# Secrets and local config
+.env
+.env.*
+.npmrc
+
+# OS / editor
+.DS_Store
+.idea
+.vscode
+
+# Local Homebridge test instance
+/test/hbConfig
