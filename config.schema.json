@@ -3,11 +3,13 @@
   "pluginType": "accessory",
   "singular": false,
   "strictValidation": true,
-  "headerDisplay": "A virtual light that turns on for a short time at a fixed interval. Use it as a trigger for HomeKit automations.",
+  "headerDisplay": "A virtual button that is pressed automatically at a fixed interval. Use it as a trigger for HomeKit automations.",
   "schema": {
     "type": "object",
-    "required": ["name", "intervalSeconds"],
-    "additionalProperties": false,
+    "required": [
+      "name",
+      "intervalSeconds"
+    ],
     "properties": {
       "name": {
         "title": "Name",
@@ -17,19 +19,11 @@
       },
       "intervalSeconds": {
         "title": "Interval (seconds)",
-        "description": "Time between pulses. Decimals are allowed (e.g. 2.5).",
+        "description": "Time between button presses. Decimals are allowed (e.g. 2.5).",
         "type": "number",
         "default": 30,
         "minimum": 1,
         "maximum": 86400
-      },
-      "onSeconds": {
-        "title": "ON time (seconds)",
-        "description": "How long the light stays on for each pulse. Must be shorter than the interval. Decimals are allowed (e.g. 0.5).",
-        "type": "number",
-        "default": 0.5,
-        "minimum": 0.1,
-        "maximum": 3600
       }
     }
   },
@@ -37,10 +31,6 @@
     "name",
     {
       "key": "intervalSeconds",
-      "type": "number"
-    },
-    {
-      "key": "onSeconds",
       "type": "number"
     }
   ]

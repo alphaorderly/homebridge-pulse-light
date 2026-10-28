@@ -4,14 +4,10 @@ export const DEFAULT_NAME = 'Pulse Light';
 export const DEFAULT_INTERVAL_SECONDS = 30;
 export const MIN_INTERVAL_SECONDS = 1;
 export const MAX_INTERVAL_SECONDS = 86400;
-export const DEFAULT_ON_SECONDS = 0.5;
-export const MIN_ON_SECONDS = 0.1;
-export const MAX_ON_SECONDS = 3600;
 
 export interface PulseLightConfig {
   name: string;
   intervalSeconds: number;
-  onSeconds: number;
 }
 
 function readSeconds(config: AccessoryConfig, key: string, min: number, max: number, fallback: number, log: Logging): number {
@@ -44,16 +40,10 @@ export function parseConfig(config: AccessoryConfig, log: Logging): PulseLightCo
     config, 'intervalSeconds', MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS, DEFAULT_INTERVAL_SECONDS, log,
   );
 
-  // The light must have time to turn OFF before the next pulse, so ON time is capped below the interval.
-  const onFallback = Math.min(DEFAULT_ON_SECONDS, intervalSeconds / 2);
-  // onSeconds is optional (added in 1.1.0), so a missing value silently keeps the original 0.5 s pulse.
-  let onSeconds = config.onSeconds === undefined
-    ? onFallback
-    : readSeconds(config, 'onSeconds', MIN_ON_SECONDS, MAX_ON_SECONDS, onFallback, log);
-  if (onSeconds >= intervalSeconds) {
-    log.error(`"onSeconds" (${onSeconds}) must be shorter than "intervalSeconds" (${intervalSeconds}); using ${onFallback}.`);
-    onSeconds = onFallback;
+  // onSeconds belonged to the light (1.x); a button press has no duration.
+  if (config.onSeconds !== undefined) {
+    log.warn('"onSeconds" is no longer used: the accessory is now a button. You can remove it from the config.');
   }
 
-  return { name, intervalSeconds, onSeconds };
+  return { name, intervalSeconds };
 }

@@ -6,6 +6,8 @@ import * as hap from '@homebridge/hap-nodejs';
 import registerPlugin from '../dist/index.js';
 import { PulseScheduler } from '../dist/pulseScheduler.js';
 
+const SINGLE_PRESS = hap.Characteristic.ProgrammableSwitchEvent.SINGLE_PRESS;
+
 function createLog() {
   const messages = { info: [], warn: [], error: [], debug: [] };
   const log = (...args) => messages.info.push(args.join(' '));
@@ -30,20 +32,22 @@ function createAccessory(config = { name: 'Pulse Light', intervalSeconds: 30 }) 
 
   const { log, messages } = createLog();
   const accessory = new Accessory(log, { accessory: 'PulseLight', ...config }, api);
-  const lightbulb = accessory.getServices().find((s) => s.UUID === hap.Service.Lightbulb.UUID);
-  const on = lightbulb.getCharacteristic(hap.Characteristic.On);
-  const changes = [];
-  on.on('change', ({ newValue }) => changes.push([Date.now(), newValue]));
+  const button = accessory.getServices().find((s) => s.UUID === hap.Service.StatelessProgrammableSwitch.UUID);
+  const switchEvent = button.getCharacteristic(hap.Characteristic.ProgrammableSwitchEvent);
+  const presses = [];
+  switchEvent.on('change', ({ newValue, reason }) => {
+    assert.equal(reason, 'event', 'presses must be sent as event notifications');
+    presses.push([Date.now(), newValue]);
+  });
 
   return {
-    api,
-    lightbulb,
-    on,
-    changes,
+    accessory,
+    button,
+    switchEvent,
+    presses,
     messages,
     launch: () => api.emit('didFinishLaunching'),
     shutdown: () => api.emit('shutdown'),
-    read: () => on.handleGetRequest(),
   };
 }
 
@@ -56,15 +60,10 @@ function tick(ms) {
     mock.timers.tick(Math.min(50, left));
   }
 }
-const nextImmediate = () => new Promise((resolve) => setImmediate(resolve));
 
-/** Expected [time, value] change events for `count` pulses at `intervalMs`, each ON for `onMs`. */
-function expectedPulses(intervalMs, count, onMs = 500) {
-  const out = [];
-  for (let k = 1; k <= count; k++) {
-    out.push([k * intervalMs, true], [k * intervalMs + onMs, false]);
-  }
-  return out;
+/** Expected [time, value] press events for `count` pulses at `intervalMs`. */
+function expectedPresses(intervalMs, count) {
+  return Array.from({ length: count }, (_, i) => [(i + 1) * intervalMs, SINGLE_PRESS]);
 }
 
 beforeEach(() => {
@@ -78,66 +77,67 @@ afterEach(() => {
   mock.restoreAll();
 });
 
-describe('pulse cycle (30 s)', () => {
-  test('starts OFF and stays OFF until the first interval elapses', async () => {
+describe('accessory', () => {
+  test('exposes a single-press-only Stateless Programmable Switch and no lightbulb', () => {
     const t = createAccessory();
-    assert.equal(t.on.value, false);
-    t.launch();
-    assert.equal(await t.read(), false);
-
-    tick(29_999);
-    assert.equal(t.on.value, false);
-    assert.equal(await t.read(), false);
-    assert.deepEqual(t.changes, []);
-    t.shutdown();
+    assert.ok(t.button);
+    assert.equal(t.accessory.getServices().some((s) => s.UUID === hap.Service.Lightbulb.UUID), false);
+    assert.deepEqual(t.switchEvent.props.validValues, [SINGLE_PRESS]);
+    assert.equal(t.switchEvent.props.minValue, SINGLE_PRESS);
+    assert.equal(t.switchEvent.props.maxValue, SINGLE_PRESS);
   });
 
-  test('turns ON at 30 s, OFF at 30.5 s, ON again at 60 s', async () => {
+  test('reads of the button event return null, as HAP requires', async () => {
     const t = createAccessory();
     t.launch();
-
     tick(30_000);
-    assert.equal(t.on.value, true, 'ON at 30 s');
-    assert.equal(await t.read(), true);
-
-    tick(499);
-    assert.equal(t.on.value, true, 'still ON at 30.499 s');
-
-    tick(1);
-    assert.equal(t.on.value, false, 'OFF at 30.5 s');
-    assert.equal(await t.read(), false);
-
-    tick(29_499);
-    assert.equal(t.on.value, false, 'still OFF at 59.999 s');
-
-    tick(1);
-    assert.equal(t.on.value, true, 'ON at 60 s');
-
-    tick(500);
-    assert.equal(t.on.value, false, 'OFF at 60.5 s');
-
-    tick(29_500);
-    assert.equal(t.on.value, true, 'ON at 90 s');
-    tick(500);
-
-    assert.deepEqual(t.changes, expectedPulses(30_000, 3));
+    assert.equal(await t.switchEvent.handleGetRequest(), null);
     t.shutdown();
   });
 
-  test('does not pulse before Homebridge finishes launching', () => {
+  test('accessory name is applied to the button service', () => {
+    const t = createAccessory({ name: '  Heartbeat  ', intervalSeconds: 5 });
+    assert.equal(t.button.displayName, 'Heartbeat');
+  });
+});
+
+describe('press cycle (30 s)', () => {
+  test('does not press until the first interval elapses', () => {
+    const t = createAccessory();
+    t.launch();
+    tick(29_999);
+    assert.deepEqual(t.presses, []);
+    t.shutdown();
+  });
+
+  test('presses once at 30 s, 60 s and 90 s', () => {
+    const t = createAccessory();
+    t.launch();
+    tick(30_000);
+    assert.deepEqual(t.presses, expectedPresses(30_000, 1));
+    tick(29_999);
+    assert.equal(t.presses.length, 1, 'no extra press before 60 s');
+    tick(1);
+    tick(30_000);
+    assert.deepEqual(t.presses, expectedPresses(30_000, 3));
+    t.shutdown();
+  });
+
+  test('does not press before Homebridge finishes launching', () => {
     const t = createAccessory();
     tick(120_000);
-    assert.deepEqual(t.changes, []);
+    assert.deepEqual(t.presses, []);
   });
 });
 
 describe('other intervals', () => {
-  for (const seconds of [1, 5, 61]) {
-    test(`${seconds} s interval pulses on a fixed grid without drift`, () => {
+  for (const seconds of [1, 2.5, 5, 61]) {
+    test(`${seconds} s interval presses on a fixed grid without drift`, () => {
       const t = createAccessory({ name: 'Fast Pulse', intervalSeconds: seconds });
+      assert.equal(t.messages.error.length, 0);
       t.launch();
-      tick(seconds * 1000 * 10 + 500);
-      assert.deepEqual(t.changes, expectedPulses(seconds * 1000, 10));
+      tick(seconds * 1000 * 10);
+      assert.deepEqual(t.presses, expectedPresses(seconds * 1000, 10));
       t.shutdown();
     });
   }
@@ -152,7 +152,7 @@ describe('config validation', () => {
       assert.match(t.messages.error[0], /intervalSeconds/);
       t.launch();
       tick(30_000);
-      assert.deepEqual(t.changes, [[30_000, true]]);
+      assert.deepEqual(t.presses, expectedPresses(30_000, 1));
       t.shutdown();
     });
   }
@@ -162,7 +162,7 @@ describe('config validation', () => {
     assert.equal(t.messages.warn.length, 1);
     t.launch();
     tick(30_000);
-    assert.equal(t.on.value, true);
+    assert.equal(t.presses.length, 1);
     t.shutdown();
   });
 
@@ -171,216 +171,77 @@ describe('config validation', () => {
     assert.equal(t.messages.error.length, 0);
     t.launch();
     tick(10_000);
-    assert.equal(t.on.value, true);
+    assert.equal(t.presses.length, 1);
     t.shutdown();
   });
 
   test('missing or blank name falls back to "Pulse Light"', () => {
     for (const name of [undefined, '', '   ', 42]) {
       const t = createAccessory({ name, intervalSeconds: 5 });
-      assert.equal(t.lightbulb.displayName, 'Pulse Light');
+      assert.equal(t.button.displayName, 'Pulse Light');
       assert.equal(t.messages.warn.length, 1);
     }
   });
 
-  test('accessory name is applied to the Lightbulb service', () => {
-    const t = createAccessory({ name: '  Heartbeat  ', intervalSeconds: 5 });
-    assert.equal(t.lightbulb.displayName, 'Heartbeat');
-  });
-});
-
-describe('decimal interval and configurable ON time', () => {
-  test('decimal intervalSeconds pulses on a fixed grid', () => {
-    const t = createAccessory({ name: 'Decimal', intervalSeconds: 2.5 });
+  test('a leftover 1.x onSeconds warns but does not change the schedule', () => {
+    const t = createAccessory({ name: 'Legacy', intervalSeconds: 5, onSeconds: 2 });
     assert.equal(t.messages.error.length, 0);
-    t.launch();
-    tick(2_500 * 4 + 500);
-    assert.deepEqual(t.changes, expectedPulses(2_500, 4));
-    t.shutdown();
-  });
-
-  test('onSeconds sets how long each pulse stays ON', () => {
-    const t = createAccessory({ name: 'Long', intervalSeconds: 10, onSeconds: 2 });
+    assert.equal(t.messages.warn.length, 1);
+    assert.match(t.messages.warn[0], /onSeconds/);
     t.launch();
     tick(10_000);
-    assert.equal(t.on.value, true);
-    tick(1_950);
-    assert.equal(t.on.value, true, 'still ON at 11.95 s');
-    tick(50);
-    assert.equal(t.on.value, false, 'OFF at 12 s');
-    tick(8_000);
-    assert.equal(t.on.value, true, 'next pulse at 20 s');
-    tick(2_000);
-    assert.deepEqual(t.changes, expectedPulses(10_000, 2, 2_000));
+    assert.deepEqual(t.presses, expectedPresses(5_000, 2));
     t.shutdown();
-  });
-
-  test('decimal and numeric-string onSeconds are accepted', () => {
-    for (const [onSeconds, onMs] of [[0.3, 300], ['1.5', 1_500]]) {
-      mock.timers.reset();
-      mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
-      const t = createAccessory({ name: 'Short', intervalSeconds: 3, onSeconds });
-      assert.equal(t.messages.error.length, 0);
-      t.launch();
-      tick(3_000 * 2 + onMs);
-      assert.deepEqual(t.changes, expectedPulses(3_000, 2, onMs));
-      t.shutdown();
-    }
-  });
-
-  test('missing onSeconds keeps the 0.5 s pulse without warnings', () => {
-    const t = createAccessory({ name: 'Legacy', intervalSeconds: 5 });
-    assert.deepEqual([t.messages.warn.length, t.messages.error.length], [0, 0]);
-    t.launch();
-    tick(5_500);
-    assert.deepEqual(t.changes, expectedPulses(5_000, 1));
-    t.shutdown();
-  });
-
-  for (const onSeconds of [0, 0.05, -1, 3_601, 'abc', null, true]) {
-    test(`onSeconds=${JSON.stringify(onSeconds)} logs an error and falls back to 0.5 s`, () => {
-      const t = createAccessory({ name: 'Bad On', intervalSeconds: 5, onSeconds });
-      assert.equal(t.messages.error.length, 1);
-      assert.match(t.messages.error[0], /onSeconds/);
-      t.launch();
-      tick(5_500);
-      assert.deepEqual(t.changes, expectedPulses(5_000, 1));
-      t.shutdown();
-    });
-  }
-
-  test('onSeconds not shorter than the interval falls back so the light can turn OFF', () => {
-    for (const [intervalSeconds, onSeconds, onMs] of [[5, 5, 500], [5, 10, 500], [1, 2, 500], [1.5, 3, 500]]) {
-      mock.timers.reset();
-      mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
-      const t = createAccessory({ name: 'Too Long', intervalSeconds, onSeconds });
-      assert.equal(t.messages.error.length, 1);
-      assert.match(t.messages.error[0], /shorter than/);
-      t.launch();
-      tick(intervalSeconds * 1000 * 2 + onMs);
-      assert.deepEqual(t.changes, expectedPulses(intervalSeconds * 1000, 2, onMs));
-      t.shutdown();
-    }
   });
 });
 
 describe('shutdown', () => {
-  test('clears the timer and turns OFF when shut down mid-pulse', async () => {
+  test('clears the timer', () => {
     const t = createAccessory();
     t.launch();
     tick(30_000);
-    assert.equal(t.on.value, true);
-
     t.shutdown();
-    assert.equal(t.on.value, false);
-    assert.equal(await t.read(), false);
-
-    const before = t.changes.length;
+    const before = t.presses.length;
     tick(600_000);
-    assert.equal(t.changes.length, before, 'no pulses after shutdown');
-  });
-
-  test('clears the timer when shut down while OFF', () => {
-    const t = createAccessory();
-    t.launch();
-    tick(10_000);
-    t.shutdown();
-    tick(600_000);
-    assert.deepEqual(t.changes, []);
+    assert.equal(t.presses.length, before, 'no presses after shutdown');
   });
 });
 
-describe('duplicate timers and overlapping pulses', () => {
+describe('duplicate timers and stacked presses', () => {
   test('repeated launch events do not create extra timers', () => {
     const t = createAccessory();
     t.launch();
     tick(10_000);
     t.launch();
     t.launch();
-    tick(50_500);
-    assert.deepEqual(t.changes, expectedPulses(30_000, 2));
+    tick(50_000);
+    assert.deepEqual(t.presses, expectedPresses(30_000, 2));
     t.shutdown();
   });
 
-  test('event-loop stall skips missed slots instead of firing pulses back to back', () => {
+  test('event-loop stall skips missed slots instead of pressing back to back', () => {
     let stall = 0;
-    const events = [];
-    const scheduler = new PulseScheduler(30_000, 500, (on) => events.push([Date.now() + stall, on]), () => Date.now() + stall);
+    const times = [];
+    const scheduler = new PulseScheduler(30_000, () => times.push(Date.now() + stall), () => Date.now() + stall);
     scheduler.start();
 
-    tick(30_000); // ON at 30 s
-    stall += 75_000; // the process freezes for 75 s while the light is ON
-    tick(500); // OFF fires late, at 105.5 s on the monotonic clock
-    tick(30_000); // advance well past the next grid slot
+    tick(30_000); // press at 30 s
+    stall += 75_000; // the process freezes for 75 s
+    tick(30_000); // the next timer fires late, at 135 s on the monotonic clock
+    tick(15_000); // next grid slot is 150 s
 
-    assert.deepEqual(events, [
-      [30_000, true],
-      [105_500, false],
-      [120_000, true],
-      [120_500, false],
-    ]);
+    assert.deepEqual(times, [30_000, 135_000, 150_000]);
     scheduler.stop();
-  });
-
-  test('ON and OFF strictly alternate under random timer lateness', () => {
-    let stall = 0;
-    const values = [];
-    const scheduler = new PulseScheduler(1_000, 500, (on) => values.push(on), () => Date.now() + stall);
-    scheduler.start();
-    let seed = 1;
-    for (let i = 0; i < 2_000; i++) {
-      seed = (seed * 16807) % 2147483647;
-      stall += seed % 1_500;
-      tick(100);
-    }
-    scheduler.stop();
-    assert.ok(values.length > 10);
-    values.forEach((v, i) => assert.equal(v, i % 2 === 0, `event ${i} breaks ON/OFF alternation`));
   });
 
   test('start() on a running scheduler is a no-op', () => {
-    const events = [];
-    const scheduler = new PulseScheduler(1_000, 500, (on) => events.push(on));
+    let count = 0;
+    const scheduler = new PulseScheduler(1_000, () => count++);
     scheduler.start();
     tick(500);
     scheduler.start();
     tick(1_000);
-    assert.deepEqual(events, [true, false]);
+    assert.equal(count, 1);
     scheduler.stop();
-  });
-});
-
-describe('manual changes from the Home app', () => {
-  test('turning ON manually is reverted and the schedule is unchanged', async () => {
-    const t = createAccessory();
-    t.launch();
-    tick(10_000);
-
-    await t.on.handleSetRequest(true);
-    await nextImmediate();
-    assert.equal(t.on.value, false);
-    assert.equal(await t.read(), false);
-
-    tick(20_000);
-    assert.equal(t.on.value, true, 'pulse still fires at 30 s');
-    tick(500);
-    assert.equal(t.on.value, false);
-    t.shutdown();
-  });
-
-  test('turning OFF during a pulse is reverted and the pulse ends on time', async () => {
-    const t = createAccessory();
-    t.launch();
-    tick(30_000);
-
-    await t.on.handleSetRequest(false);
-    await nextImmediate();
-    assert.equal(t.on.value, true);
-
-    tick(500);
-    assert.equal(t.on.value, false);
-    tick(29_500);
-    assert.equal(t.on.value, true, 'next pulse at 60 s');
-    t.shutdown();
   });
 });
