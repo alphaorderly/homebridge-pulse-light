@@ -1,6 +1,3 @@
-/** How long the light stays on for each pulse. Intentionally not configurable. */
-export const PULSE_DURATION_MS = 500;
-
 /**
  * Drives the OFF -> ON -> OFF pulse cycle.
  *
@@ -17,6 +14,7 @@ export class PulseScheduler {
 
   constructor(
     private readonly intervalMs: number,
+    private readonly onMs: number,
     private readonly onChange: (on: boolean) => void,
     private readonly now: () => number = () => performance.now(),
   ) {}
@@ -54,7 +52,7 @@ export class PulseScheduler {
 
   private pulseOn(): void {
     this.setState(true);
-    this.arm(PULSE_DURATION_MS, () => this.pulseOff());
+    this.arm(this.onMs, () => this.pulseOff());
   }
 
   private pulseOff(): void {

@@ -1,7 +1,7 @@
 import type { AccessoryConfig, AccessoryPlugin, API, Characteristic, CharacteristicValue, Logging, Service } from 'homebridge';
 
 import { parseConfig } from './config.js';
-import { PULSE_DURATION_MS, PulseScheduler } from './pulseScheduler.js';
+import { PulseScheduler } from './pulseScheduler.js';
 
 export class PulseLightAccessory implements AccessoryPlugin {
   private readonly informationService: Service;
@@ -14,7 +14,7 @@ export class PulseLightAccessory implements AccessoryPlugin {
     config: AccessoryConfig,
     api: API,
   ) {
-    const { name, intervalSeconds } = parseConfig(config, log);
+    const { name, intervalSeconds, onSeconds } = parseConfig(config, log);
 
     this.informationService = new api.hap.Service.AccessoryInformation()
       .setCharacteristic(api.hap.Characteristic.Manufacturer, 'homebridge-pulse-light')
@@ -24,7 +24,7 @@ export class PulseLightAccessory implements AccessoryPlugin {
     this.lightbulbService = new api.hap.Service.Lightbulb(name);
     this.onCharacteristic = this.lightbulbService.getCharacteristic(api.hap.Characteristic.On);
 
-    this.scheduler = new PulseScheduler(intervalSeconds * 1000, (on) => {
+    this.scheduler = new PulseScheduler(Math.round(intervalSeconds * 1000), Math.round(onSeconds * 1000), (on) => {
       this.log.debug(on ? 'Pulse ON' : 'Pulse OFF');
       this.onCharacteristic.updateValue(on);
     });
@@ -37,7 +37,7 @@ export class PulseLightAccessory implements AccessoryPlugin {
     api.on('didFinishLaunching', () => this.scheduler.start());
     api.on('shutdown', () => this.scheduler.stop());
 
-    this.log.info(`Pulsing ON for ${PULSE_DURATION_MS} ms every ${intervalSeconds} s.`);
+    this.log.info(`Pulsing ON for ${onSeconds} s every ${intervalSeconds} s.`);
   }
 
   getServices(): Service[] {

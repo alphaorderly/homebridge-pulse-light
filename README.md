@@ -4,14 +4,14 @@
 [![Build and Test](https://github.com/alphaorderly/homebridge-pulse-light/actions/workflows/build.yml/badge.svg)](https://github.com/alphaorderly/homebridge-pulse-light/actions/workflows/build.yml)
 
 A [Homebridge](https://homebridge.io) plugin that adds one **virtual light** to HomeKit. The light is OFF, and every
-`intervalSeconds` it turns **ON for 500 ms**, then OFF again. It repeats for as long as Homebridge runs.
+`intervalSeconds` it turns **ON for `onSeconds`** (0.5 s by default), then OFF again. It repeats for as long as Homebridge runs.
 
 There is no real hardware. The plugin only reports state changes to HomeKit, so you can use the pulse as a
 recurring trigger for HomeKit automations, such as "every 5 minutes, check X" or "every 30 seconds, do Y".
 
 ## How it behaves
 
-With `intervalSeconds: 30`:
+With `intervalSeconds: 30` and `onSeconds: 0.5`:
 
 | Time   | Light |
 | ------ | ----- |
@@ -47,14 +47,11 @@ Requires Node.js 22, 24 or 26 and Homebridge 1.8 or later (Homebridge 2.x suppor
 
 ## Configuration
 
-The plugin has exactly two settings:
-
-| Key               | Type    | Required | Description                                                       |
-| ----------------- | ------- | -------- | ----------------------------------------------------------------- |
-| `name`            | string  | yes      | Accessory name shown in the Home app.                             |
-| `intervalSeconds` | integer | yes      | Seconds between pulses. Minimum `1`, maximum `86400` (24 hours).  |
-
-The 500 ms ON time is fixed and can't be configured.
+| Key               | Type   | Required | Default | Description                                                                         |
+| ----------------- | ------ | -------- | ------- | ----------------------------------------------------------------------------------- |
+| `name`            | string | yes      |         | Accessory name shown in the Home app.                                               |
+| `intervalSeconds` | number | yes      | `30`    | Seconds between pulses. Decimals allowed. Minimum `1`, maximum `86400` (24 hours).  |
+| `onSeconds`       | number | no       | `0.5`   | Seconds the light stays ON per pulse. Decimals allowed. Minimum `0.1`, maximum `3600`, and must be shorter than `intervalSeconds`. |
 
 Add an entry to the `accessories` array in `config.json`:
 
@@ -64,7 +61,8 @@ Add an entry to the `accessories` array in `config.json`:
     {
       "accessory": "PulseLight",
       "name": "Pulse Light",
-      "intervalSeconds": 30
+      "intervalSeconds": 30,
+      "onSeconds": 0.5
     }
   ]
 }
@@ -72,13 +70,14 @@ Add an entry to the `accessories` array in `config.json`:
 
 You can add several entries with different names and intervals. Each entry becomes its own light.
 
-If `intervalSeconds` is missing or invalid (not a whole number, less than 1, or more than 86400), the plugin logs an error and uses
-30 seconds. Homebridge and your other plugins keep running.
+If `intervalSeconds` is missing or invalid (not a number, or outside 1 to 86400), the plugin logs an error and uses 30 seconds.
+If `onSeconds` is invalid or not shorter than the interval, the plugin logs an error and uses 0.5 seconds (or half the interval,
+whichever is shorter). If `onSeconds` is left out, 0.5 seconds is used. Homebridge and your other plugins keep running.
 
 ### Using the Homebridge UI
 
 1. Go to **Plugins → Pulse Light → Settings** (the gear icon).
-2. Enter a **Name** and an **Interval (seconds)**.
+2. Enter a **Name**, an **Interval (seconds)** and an **ON time (seconds)**. Both time fields are number inputs.
 3. Click **Save**, then restart Homebridge from the UI to apply the change.
 
 ## Using it as an automation trigger

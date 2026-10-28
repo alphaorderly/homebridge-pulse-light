@@ -4,7 +4,7 @@ import { EventEmitter } from 'node:events';
 import * as hap from '@homebridge/hap-nodejs';
 
 import registerPlugin from '../dist/index.js';
-import { PULSE_DURATION_MS, PulseScheduler } from '../dist/pulseScheduler.js';
+import { PulseScheduler } from '../dist/pulseScheduler.js';
 
 function createLog() {
   const messages = { info: [], warn: [], error: [], debug: [] };
@@ -58,11 +58,11 @@ function tick(ms) {
 }
 const nextImmediate = () => new Promise((resolve) => setImmediate(resolve));
 
-/** Expected [time, value] change events for `count` pulses at `intervalMs`. */
-function expectedPulses(intervalMs, count) {
+/** Expected [time, value] change events for `count` pulses at `intervalMs`, each ON for `onMs`. */
+function expectedPulses(intervalMs, count, onMs = 500) {
   const out = [];
   for (let k = 1; k <= count; k++) {
-    out.push([k * intervalMs, true], [k * intervalMs + PULSE_DURATION_MS, false]);
+    out.push([k * intervalMs, true], [k * intervalMs + onMs, false]);
   }
   return out;
 }
@@ -136,7 +136,7 @@ describe('other intervals', () => {
     test(`${seconds} s interval pulses on a fixed grid without drift`, () => {
       const t = createAccessory({ name: 'Fast Pulse', intervalSeconds: seconds });
       t.launch();
-      tick(seconds * 1000 * 10 + PULSE_DURATION_MS);
+      tick(seconds * 1000 * 10 + 500);
       assert.deepEqual(t.changes, expectedPulses(seconds * 1000, 10));
       t.shutdown();
     });
@@ -144,7 +144,7 @@ describe('other intervals', () => {
 });
 
 describe('config validation', () => {
-  const invalid = [0, -5, 2.5, 86_401, 'abc', '', null, true, {}, []];
+  const invalid = [0, 0.5, -5, 86_401, 'abc', '', 'NaN', null, true, {}, []];
   for (const intervalSeconds of invalid) {
     test(`intervalSeconds=${JSON.stringify(intervalSeconds)} logs an error and falls back to 30 s`, () => {
       const t = createAccessory({ name: 'Bad', intervalSeconds });
@@ -189,6 +189,81 @@ describe('config validation', () => {
   });
 });
 
+describe('decimal interval and configurable ON time', () => {
+  test('decimal intervalSeconds pulses on a fixed grid', () => {
+    const t = createAccessory({ name: 'Decimal', intervalSeconds: 2.5 });
+    assert.equal(t.messages.error.length, 0);
+    t.launch();
+    tick(2_500 * 4 + 500);
+    assert.deepEqual(t.changes, expectedPulses(2_500, 4));
+    t.shutdown();
+  });
+
+  test('onSeconds sets how long each pulse stays ON', () => {
+    const t = createAccessory({ name: 'Long', intervalSeconds: 10, onSeconds: 2 });
+    t.launch();
+    tick(10_000);
+    assert.equal(t.on.value, true);
+    tick(1_950);
+    assert.equal(t.on.value, true, 'still ON at 11.95 s');
+    tick(50);
+    assert.equal(t.on.value, false, 'OFF at 12 s');
+    tick(8_000);
+    assert.equal(t.on.value, true, 'next pulse at 20 s');
+    tick(2_000);
+    assert.deepEqual(t.changes, expectedPulses(10_000, 2, 2_000));
+    t.shutdown();
+  });
+
+  test('decimal and numeric-string onSeconds are accepted', () => {
+    for (const [onSeconds, onMs] of [[0.3, 300], ['1.5', 1_500]]) {
+      mock.timers.reset();
+      mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+      const t = createAccessory({ name: 'Short', intervalSeconds: 3, onSeconds });
+      assert.equal(t.messages.error.length, 0);
+      t.launch();
+      tick(3_000 * 2 + onMs);
+      assert.deepEqual(t.changes, expectedPulses(3_000, 2, onMs));
+      t.shutdown();
+    }
+  });
+
+  test('missing onSeconds keeps the 0.5 s pulse without warnings', () => {
+    const t = createAccessory({ name: 'Legacy', intervalSeconds: 5 });
+    assert.deepEqual([t.messages.warn.length, t.messages.error.length], [0, 0]);
+    t.launch();
+    tick(5_500);
+    assert.deepEqual(t.changes, expectedPulses(5_000, 1));
+    t.shutdown();
+  });
+
+  for (const onSeconds of [0, 0.05, -1, 3_601, 'abc', null, true]) {
+    test(`onSeconds=${JSON.stringify(onSeconds)} logs an error and falls back to 0.5 s`, () => {
+      const t = createAccessory({ name: 'Bad On', intervalSeconds: 5, onSeconds });
+      assert.equal(t.messages.error.length, 1);
+      assert.match(t.messages.error[0], /onSeconds/);
+      t.launch();
+      tick(5_500);
+      assert.deepEqual(t.changes, expectedPulses(5_000, 1));
+      t.shutdown();
+    });
+  }
+
+  test('onSeconds not shorter than the interval falls back so the light can turn OFF', () => {
+    for (const [intervalSeconds, onSeconds, onMs] of [[5, 5, 500], [5, 10, 500], [1, 2, 500], [1.5, 3, 500]]) {
+      mock.timers.reset();
+      mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 0 });
+      const t = createAccessory({ name: 'Too Long', intervalSeconds, onSeconds });
+      assert.equal(t.messages.error.length, 1);
+      assert.match(t.messages.error[0], /shorter than/);
+      t.launch();
+      tick(intervalSeconds * 1000 * 2 + onMs);
+      assert.deepEqual(t.changes, expectedPulses(intervalSeconds * 1000, 2, onMs));
+      t.shutdown();
+    }
+  });
+});
+
 describe('shutdown', () => {
   test('clears the timer and turns OFF when shut down mid-pulse', async () => {
     const t = createAccessory();
@@ -230,7 +305,7 @@ describe('duplicate timers and overlapping pulses', () => {
   test('event-loop stall skips missed slots instead of firing pulses back to back', () => {
     let stall = 0;
     const events = [];
-    const scheduler = new PulseScheduler(30_000, (on) => events.push([Date.now() + stall, on]), () => Date.now() + stall);
+    const scheduler = new PulseScheduler(30_000, 500, (on) => events.push([Date.now() + stall, on]), () => Date.now() + stall);
     scheduler.start();
 
     tick(30_000); // ON at 30 s
@@ -250,7 +325,7 @@ describe('duplicate timers and overlapping pulses', () => {
   test('ON and OFF strictly alternate under random timer lateness', () => {
     let stall = 0;
     const values = [];
-    const scheduler = new PulseScheduler(1_000, (on) => values.push(on), () => Date.now() + stall);
+    const scheduler = new PulseScheduler(1_000, 500, (on) => values.push(on), () => Date.now() + stall);
     scheduler.start();
     let seed = 1;
     for (let i = 0; i < 2_000; i++) {
@@ -265,7 +340,7 @@ describe('duplicate timers and overlapping pulses', () => {
 
   test('start() on a running scheduler is a no-op', () => {
     const events = [];
-    const scheduler = new PulseScheduler(1_000, (on) => events.push(on));
+    const scheduler = new PulseScheduler(1_000, 500, (on) => events.push(on));
     scheduler.start();
     tick(500);
     scheduler.start();

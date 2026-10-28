@@ -4,10 +4,28 @@ export const DEFAULT_NAME = 'Pulse Light';
 export const DEFAULT_INTERVAL_SECONDS = 30;
 export const MIN_INTERVAL_SECONDS = 1;
 export const MAX_INTERVAL_SECONDS = 86400;
+export const DEFAULT_ON_SECONDS = 0.5;
+export const MIN_ON_SECONDS = 0.1;
+export const MAX_ON_SECONDS = 3600;
 
 export interface PulseLightConfig {
   name: string;
   intervalSeconds: number;
+  onSeconds: number;
+}
+
+function readSeconds(config: AccessoryConfig, key: string, min: number, max: number, fallback: number, log: Logging): number {
+  const raw: unknown = config[key];
+  if (raw === undefined) {
+    log.warn(`"${key}" is not set; using ${fallback}.`);
+    return fallback;
+  }
+  const value = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max) {
+    log.error(`"${key}" must be a number between ${min} and ${max} (got ${JSON.stringify(raw)}); using ${fallback}.`);
+    return fallback;
+  }
+  return value;
 }
 
 /**
@@ -22,24 +40,20 @@ export function parseConfig(config: AccessoryConfig, log: Logging): PulseLightCo
     log.warn(`"name" is missing or empty; using "${DEFAULT_NAME}".`);
   }
 
-  let intervalSeconds = DEFAULT_INTERVAL_SECONDS;
-  const raw: unknown = config.intervalSeconds;
-  const value = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw;
-  if (raw === undefined) {
-    log.warn(`"intervalSeconds" is not set; using ${DEFAULT_INTERVAL_SECONDS}.`);
-  } else if (
-    typeof value !== 'number' ||
-    !Number.isInteger(value) ||
-    value < MIN_INTERVAL_SECONDS ||
-    value > MAX_INTERVAL_SECONDS
-  ) {
-    log.error(
-      `"intervalSeconds" must be an integer between ${MIN_INTERVAL_SECONDS} and ${MAX_INTERVAL_SECONDS} ` +
-      `(got ${JSON.stringify(raw)}); using ${DEFAULT_INTERVAL_SECONDS}.`,
-    );
-  } else {
-    intervalSeconds = value;
+  const intervalSeconds = readSeconds(
+    config, 'intervalSeconds', MIN_INTERVAL_SECONDS, MAX_INTERVAL_SECONDS, DEFAULT_INTERVAL_SECONDS, log,
+  );
+
+  // The light must have time to turn OFF before the next pulse, so ON time is capped below the interval.
+  const onFallback = Math.min(DEFAULT_ON_SECONDS, intervalSeconds / 2);
+  // onSeconds is optional (added in 1.1.0), so a missing value silently keeps the original 0.5 s pulse.
+  let onSeconds = config.onSeconds === undefined
+    ? onFallback
+    : readSeconds(config, 'onSeconds', MIN_ON_SECONDS, MAX_ON_SECONDS, onFallback, log);
+  if (onSeconds >= intervalSeconds) {
+    log.error(`"onSeconds" (${onSeconds}) must be shorter than "intervalSeconds" (${intervalSeconds}); using ${onFallback}.`);
+    onSeconds = onFallback;
   }
 
-  return { name, intervalSeconds };
+  return { name, intervalSeconds, onSeconds };
 }
